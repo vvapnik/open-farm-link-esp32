@@ -46,6 +46,22 @@ void defaultPreferences(JsonObject out) {
   out["quiet_hours"] = nullptr;
   out["max_brightness"] = nullptr;
   out["vacation_mode"] = false;
+  out["timezone"] = nullptr;
+}
+
+void loadPreferences(JsonDocument &out) {
+  String stored = load(kPrefsNamespace, "garden");
+  JsonDocument defaults;
+  defaultPreferences(defaults.to<JsonObject>());
+  if (stored.isEmpty() || deserializeJson(out, stored) != DeserializationError::Ok) out.to<JsonObject>();
+  for (JsonPairConst kv : defaults.as<JsonObjectConst>())
+    if (out[kv.key()].isUnbound()) out[kv.key()] = kv.value(); // fields added after it was stored
+}
+
+void applyTimezone(JsonVariantConst tz) {
+  // POSIX TZ rule, e.g. "CET-1CEST,M3.5.0,M10.5.0/3"; null = UTC.
+  setenv("TZ", tz.is<const char *>() ? tz.as<const char *>() : "UTC0", 1);
+  tzset();
 }
 
 bool mergePreferences(JsonVariantConst body, JsonObject current) {
@@ -59,6 +75,10 @@ bool mergePreferences(JsonVariantConst body, JsonObject current) {
   if (!mb.isUnbound() && !mb.isNull() && !numberIn(mb, 0, 100)) return false;
   JsonVariantConst vm = body["vacation_mode"];
   if (!vm.isUnbound() && !vm.is<bool>()) return false;
+  JsonVariantConst tz = body["timezone"];
+  if (!tz.isUnbound() && !tz.isNull() &&
+      !(tz.is<const char *>() && strlen(tz.as<const char *>()) > 2 && strlen(tz.as<const char *>()) < 64))
+    return false;
 
   if (!qh.isUnbound()) {
     if (qh.isNull()) {
@@ -71,6 +91,7 @@ bool mergePreferences(JsonVariantConst body, JsonObject current) {
   }
   if (!mb.isUnbound()) current["max_brightness"] = mb;
   if (!vm.isUnbound()) current["vacation_mode"] = vm;
+  if (!tz.isUnbound()) current["timezone"] = tz;
   return true;
 }
 
@@ -95,6 +116,11 @@ bool parseGrowProfile(JsonVariantConst body, JsonObject out) {
     if (!kv.value().is<bool>()) return false;
     out[key] = kv.value();
   }
+
+  // Per-Plant automation switches (§8.3) are always present: a profile
+  // that leaves one out keeps that automation on, as the default does.
+  for (const char *flag : {"watering_enabled", "lighting_enabled", "climate_enabled"})
+    if (out[flag].isNull()) out[flag] = true;
 
   JsonVariantConst targets = body["targets"];
   if (!targets.is<JsonObjectConst>()) return false;

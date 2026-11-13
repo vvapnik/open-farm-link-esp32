@@ -138,7 +138,16 @@ class OflGarden {
   // PUT .../actuators/{capability}: `value` in the unit GET reports (lux for
   // a calibrated light), converted to the module's command. Writes the
   // resulting entry into `out`. False if the capability isn't there.
-  bool setActuator(uint8_t groupAnchor, const String &capability, float value, JsonObject out);
+  bool setActuator(uint8_t groupAnchor, const String &capability, float value, JsonObject out,
+                   float maxCommand = 100);
+  // True if this group's dimmer has a usable PWM -> lux curve; outputs its light module address.
+  bool hasLuxCurve(uint8_t groupAnchor, uint8_t &outAddress);
+
+  // A person changed this Plant's light by hand (Actuators or raw Modules
+  // write): hand lighting over to them — grow_profile.lighting_enabled =
+  // false, persisted (docs/11 §11.2 lighting). No-op for System.
+  void disableAutoLighting(uint8_t groupAnchor);
+  bool isDimmerEndpoint(uint8_t address, uint8_t epIndex);
 
   // Grow Profile (docs/08). `json` must already be validated.
   bool setGrowProfile(const String &plantId, const String &json);

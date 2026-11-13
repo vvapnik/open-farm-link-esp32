@@ -133,9 +133,7 @@ bool OflHttpServer::handleGardenRoutes(const std::vector<String> &seg, const Str
   // docs/13 Preferences — PUT is a partial update of the standard fields.
   if (seg.size() == 2 && seg[1] == "preferences") {
     JsonDocument prefs;
-    String stored = config::load(config::kPrefsNamespace, "garden");
-    if (stored.isEmpty() || deserializeJson(prefs, stored) != DeserializationError::Ok)
-      config::defaultPreferences(prefs.to<JsonObject>());
+    config::loadPreferences(prefs);
     if (method == "GET") {
       sendJson(200, prefs);
       return true;
@@ -150,6 +148,7 @@ bool OflHttpServer::handleGardenRoutes(const std::vector<String> &seg, const Str
       String json;
       serializeJson(prefs, json);
       config::store(config::kPrefsNamespace, "garden", json);
+      config::applyTimezone(prefs["timezone"]);
       sendJson(200, prefs);
       return true;
     }
@@ -402,6 +401,7 @@ bool OflHttpServer::handleGroupSubroutes(const std::vector<String> &rest, const 
         sendError(404, "not_found");
         return true;
       }
+      if (capability == "dimmer") garden_.disableAutoLighting(groupAnchor);
       sendJson(200, doc);
       return true;
     }
@@ -441,6 +441,7 @@ bool OflHttpServer::handleGroupSubroutes(const std::vector<String> &rest, const 
         sendError(404, "not_found");
         return true;
       }
+      if (garden_.isDimmerEndpoint(address, epIndex)) garden_.disableAutoLighting(groupAnchor);
       JsonDocument doc;
       doc["index"] = epIndex;
       doc["value"] = value;

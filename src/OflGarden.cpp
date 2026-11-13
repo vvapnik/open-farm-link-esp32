@@ -318,6 +318,12 @@ bool OflGarden::luxCurve(uint8_t address, std::vector<config::CurvePoint> &out) 
 // PWM -> lux curve (Settings dimmer_lux_curve) reports lux plus the curve's
 // range as min/max; without one, an endpoint whose wire format is Percent
 // is reported honestly as percent rather than as the catalog's lux.
+bool OflGarden::hasLuxCurve(uint8_t groupAnchor, uint8_t &outAddress) {
+  uint8_t ep;
+  std::vector<config::CurvePoint> curve;
+  return findEndpointForCapability(groupAnchor, "dimmer", outAddress, ep) && luxCurve(outAddress, curve);
+}
+
 void OflGarden::describeActuator(uint8_t address, TypeId type, Format format, uint32_t raw, JsonObject entry) {
   std::vector<config::CurvePoint> curve;
   if (type == TypeId::Dimmer && luxCurve(address, curve)) {
@@ -337,7 +343,8 @@ void OflGarden::describeActuator(uint8_t address, TypeId type, Format format, ui
   }
 }
 
-bool OflGarden::setActuator(uint8_t groupAnchor, const String &capability, float value, JsonObject out) {
+bool OflGarden::setActuator(uint8_t groupAnchor, const String &capability, float value, JsonObject out,
+                            float maxCommand) {
   uint8_t address, ep;
   if (!findEndpointForCapability(groupAnchor, capability, address, ep)) return false;
   TypeId type;
@@ -348,7 +355,7 @@ bool OflGarden::setActuator(uint8_t groupAnchor, const String &capability, float
   std::vector<config::CurvePoint> curve;
   float command = value;
   if (type == TypeId::Dimmer && luxCurve(address, curve)) command = config::curveToCommand(curve, value);
-  if (format == Format::Percent) command = constrain(command, 0.0f, 100.0f);
+  if (format == Format::Percent) command = constrain(command, 0.0f, maxCommand);
   uint32_t raw = static_cast<uint32_t>(lroundf(command < 0 ? 0 : command));
   if (!selectAndWrite(address, ep, raw)) return false;
 
@@ -508,6 +515,28 @@ void OflGarden::writeSettingsList(uint8_t groupAnchor, JsonObject out) {
     entry["module_id"] = idBuf;
     entry["settings"] = settings.as<JsonObjectConst>();
   }
+}
+
+void OflGarden::disableAutoLighting(uint8_t groupAnchor) {
+  const PlantEntry *plant = plantForGroup(groupAnchor);
+  if (!plant) return;
+  JsonDocument doc;
+  if (plant->growProfile.isEmpty() || deserializeJson(doc, plant->growProfile) != DeserializationError::Ok)
+    config::defaultGrowProfile(doc.to<JsonObject>());
+  if (doc["lighting_enabled"] == false) return;
+  doc["lighting_enabled"] = false;
+  String json;
+  serializeJson(doc, json);
+  setGrowProfile(plant->plantId, json);
+  Serial.printf("[OFL] lighting %s: manual change, automatic lighting off\n", plant->plantId.c_str());
+}
+
+bool OflGarden::isDimmerEndpoint(uint8_t address, uint8_t epIndex) {
+  TypeId type;
+  Mode mode;
+  Format format;
+  return master_.selectEndpoint(address, epIndex) && master_.readEndpointDescriptor(address, type, mode, format) &&
+         type == TypeId::Dimmer;
 }
 
 bool OflGarden::setGrowProfile(const String &plantId, const String &json) {

@@ -19,6 +19,10 @@ namespace config {
 // in `current` (which is updated in place).
 bool mergePreferences(JsonVariantConst body, JsonObject current);
 void defaultPreferences(JsonObject out);
+// Stored Preferences with defaults filled in.
+void loadPreferences(JsonDocument &out);
+// Preferences.timezone (POSIX TZ string or null = UTC) -> libc localtime.
+void applyTimezone(JsonVariantConst tz);
 
 // Whole-profile replace: copies only the fields the spec defines into `out`.
 bool parseGrowProfile(JsonVariantConst body, JsonObject out);

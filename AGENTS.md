@@ -161,6 +161,17 @@ update" language.
   lux with `min`/`max`, and `setActuator()` maps lux back to PWM
   (piecewise linear, clamped). Without a curve a Percent endpoint is
   reported as `percent` 0–100 instead of the catalog's lux.
+- **Auto-lighting** (TASK-98.2, `OflLighting`): generic `lighting`
+  template built in (docs/11 §11.2). Window opens at the end of quiet
+  hours, closes at quiet hours or after `light_hours_per_day`, whichever
+  is first; edge-triggered (`light_lux` on entering, incl. boot or light
+  re-appearing; 0 on leaving), capped by `max_brightness` as % PWM. A
+  manual dimmer write (Actuators or raw Modules) sets `lighting_enabled`
+  false. Needs a lux curve and `Preferences.timezone` (POSIX TZ).
+  **Gotcha:** `configTime()` resets TZ to UTC — the timezone is applied
+  after `beginNtpSync()`; before that fix a reboot ran the window in UTC.
+- `*_enabled` flags (watering/lighting/climate) are always present in a
+  stored Grow Profile; one left out of a PUT stays `true`.
 - **Hardware Calibration** is always `{ "calibrations": [] }` — there's no
   hardware-model library on the device (import is deferred by the spec,
   §6.4).

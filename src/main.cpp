@@ -18,7 +18,9 @@
 #include <stdarg.h>
 
 #include "OflGarden.h"
+#include "OflConfig.h"
 #include "OflHttpServer.h"
+#include "OflLighting.h"
 #include "OflMdns.h"
 #include "wifi_secrets.h"
 
@@ -38,6 +40,7 @@ OgrMaster master(transport);
 ofl::OflGarden garden(master);
 WebServer webServer(kHttpPort);
 ofl::OflHistory history(garden);
+ofl::OflLighting lighting(garden);
 ofl::OflHttpServer oflServer(webServer, garden, history);
 
 void dprintf(const char *fmt, ...) {
@@ -102,6 +105,13 @@ void setup() {
 
   connectWifi();
   garden.beginNtpSync(); // best-effort; garden.pollTimeSync() in loop() notices once it lands
+  {
+    // After configTime(): it resets TZ to UTC. Quiet hours and the light
+    // window are in local time (Preferences.timezone, docs/13 §13.2).
+    JsonDocument prefs;
+    ofl::config::loadPreferences(prefs);
+    ofl::config::applyTimezone(prefs["timezone"]);
+  }
 
   String claimed = ofl::mdnsClaimHostname(garden.gardenId(), kHttpPort);
   if (claimed.isEmpty()) {
@@ -119,6 +129,7 @@ void loop() {
   garden.update();
   garden.pollTimeSync();
   history.update(garden.timeValid());
+  lighting.update(garden.timeValid());
   webServer.handleClient();
 
   static uint32_t lastHeartbeat = 0;
