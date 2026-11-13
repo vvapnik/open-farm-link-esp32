@@ -2,6 +2,8 @@
 
 #include <math.h>
 
+#include <algorithm>
+
 namespace ofl {
 namespace config {
 
@@ -148,6 +150,16 @@ bool parseSettings(JsonVariantConst body, JsonObject out) {
       if (!v.is<uint32_t>() || v.is<bool>()) return false;
     } else if (strcmp(key, "moisture_dry_raw") == 0 || strcmp(key, "moisture_wet_raw") == 0) {
       if (!v.is<uint16_t>() || v.is<bool>()) return false; // OGR Raw16
+    } else if (strcmp(key, kLuxCurveKey) == 0) {
+      std::vector<CurvePoint> pts;
+      if (!readCurve(v, pts)) return false;
+      JsonArray arr = out[kLuxCurveKey].to<JsonArray>();
+      for (const auto &p : pts) {
+        JsonObject o = arr.add<JsonObject>();
+        o["command"] = p.command;
+        o["lux"] = p.physical;
+      }
+      continue; // stored sorted by command
     } else if (!isPrimitive(v)) {
       return false;
     }
@@ -157,6 +169,49 @@ bool parseSettings(JsonVariantConst body, JsonObject out) {
   JsonVariantConst dry = settings["moisture_dry_raw"], wet = settings["moisture_wet_raw"];
   if (!dry.isUnbound() && !wet.isUnbound() && dry.as<uint32_t>() == wet.as<uint32_t>()) return false;
   return true;
+}
+
+// ---- Light curve (docs/07 §7.3 dimmer_lux_curve) --------------------------------
+
+bool readCurve(JsonVariantConst v, std::vector<CurvePoint> &out) {
+  out.clear();
+  if (!v.is<JsonArrayConst>()) return false;
+  JsonArrayConst arr = v.as<JsonArrayConst>();
+  if (arr.size() > kMaxCurvePoints) return false;
+  for (JsonVariantConst p : arr) {
+    JsonVariantConst c = p["command"], l = p["lux"];
+    if (!numberIn(c, 0, 100) || !numberIn(l, 0, INFINITY)) return false;
+    out.push_back({c.as<float>(), l.as<float>()});
+  }
+  std::sort(out.begin(), out.end(), [](const CurvePoint &a, const CurvePoint &b) { return a.command < b.command; });
+  // Lux must rise strictly with PWM, or lux -> PWM wouldn't be a function.
+  for (size_t i = 1; i < out.size(); ++i)
+    if (out[i].command == out[i - 1].command || out[i].physical <= out[i - 1].physical) return false;
+  return true;
+}
+
+namespace {
+float lerp(float x, float x0, float x1, float y0, float y1) {
+  return x1 == x0 ? y0 : y0 + (x - x0) * (y1 - y0) / (x1 - x0);
+}
+} // namespace
+
+float curveToPhysical(const std::vector<CurvePoint> &c, float command) {
+  if (command <= c.front().command) return c.front().physical;
+  if (command >= c.back().command) return c.back().physical;
+  for (size_t i = 1; i < c.size(); ++i)
+    if (command <= c[i].command)
+      return lerp(command, c[i - 1].command, c[i].command, c[i - 1].physical, c[i].physical);
+  return c.back().physical;
+}
+
+float curveToCommand(const std::vector<CurvePoint> &c, float physical) {
+  if (physical <= c.front().physical) return c.front().command;
+  if (physical >= c.back().physical) return c.back().command;
+  for (size_t i = 1; i < c.size(); ++i)
+    if (physical <= c[i].physical)
+      return lerp(physical, c[i - 1].physical, c[i].physical, c[i - 1].command, c[i].command);
+  return c.back().command;
 }
 
 // ---- NVS --------------------------------------------------------------------------

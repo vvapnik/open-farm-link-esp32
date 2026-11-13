@@ -389,24 +389,19 @@ bool OflHttpServer::handleGroupSubroutes(const std::vector<String> &rest, const 
     }
     if (rest.size() == 2 && method == "PUT") {
       const String &capability = rest[1];
-      uint8_t address, epIndex;
-      if (!garden_.findEndpointForCapability(groupAnchor, capability, address, epIndex)) {
-        sendError(404, "not_found");
-        return true;
-      }
       JsonDocument body;
-      if (deserializeJson(body, server_.arg("plain")) != DeserializationError::Ok) {
+      if (!readBody(body)) return true;
+      JsonVariantConst v = body["value"];
+      if (!(v.is<float>() || v.is<bool>())) {
         sendError(400, "bad_request");
         return true;
       }
-      uint32_t value = body["value"].as<uint32_t>();
-      if (!garden_.selectAndWrite(address, epIndex, value)) {
+      JsonDocument doc;
+      if (!garden_.setActuator(groupAnchor, capability, v.is<bool>() ? (v.as<bool>() ? 1 : 0) : v.as<float>(),
+                               doc.to<JsonObject>())) {
         sendError(404, "not_found");
         return true;
       }
-      JsonDocument doc;
-      doc["capability"] = capability;
-      doc["value"] = value;
       sendJson(200, doc);
       return true;
     }

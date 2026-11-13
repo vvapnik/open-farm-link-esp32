@@ -155,6 +155,12 @@ update" language.
   taken from the pot firmware's 45–115 kHz range — refine from a real
   batch); Settings GET shows them as the module's "Default Settings"
   (docs/07 §7.2). A module already reporting `percent` is passed through.
+- **Light lux** (TASK-105): `dimmer_lux_curve` in the light module's
+  Settings (up to 8 `{command, lux}`, validated and stored sorted, lux
+  strictly rising). With >= 2 points `describeActuator()` reports dimmer in
+  lux with `min`/`max`, and `setActuator()` maps lux back to PWM
+  (piecewise linear, clamped). Without a curve a Percent endpoint is
+  reported as `percent` 0–100 instead of the catalog's lux.
 - **Hardware Calibration** is always `{ "calibrations": [] }` — there's no
   hardware-model library on the device (import is deferred by the spec,
   §6.4).

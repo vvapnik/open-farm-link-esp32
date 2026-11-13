@@ -8,6 +8,8 @@
 #include <ArduinoJson.h>
 #include <Preferences.h>
 
+#include <vector>
+
 namespace ofl {
 namespace config {
 
@@ -24,6 +26,23 @@ void defaultGrowProfile(JsonObject out);
 
 // Body `{ settings: {...} }` -> the inner object, copied into `out`.
 bool parseSettings(JsonVariantConst body, JsonObject out);
+
+// ---- Light calibration: PWM -> lux at the plant ---------------------------
+// Settings field of a light module (docs/07 §7.3): points measured with a
+// lux meter, {command: 0..100 % PWM, lux}. Piecewise linear, clamped to the
+// measured range; usable once it has >= 2 points.
+constexpr char kLuxCurveKey[] = "dimmer_lux_curve";
+constexpr size_t kMaxCurvePoints = 8;
+
+struct CurvePoint {
+  float command;
+  float physical;
+};
+
+// Validates and returns the points sorted by command (lux strictly rising).
+bool readCurve(JsonVariantConst v, std::vector<CurvePoint> &out);
+float curveToPhysical(const std::vector<CurvePoint> &curve, float command);
+float curveToCommand(const std::vector<CurvePoint> &curve, float physical);
 
 // ---- NVS storage ------------------------------------------------------------
 // One JSON string per entry. NVS caps a key at 15 chars and a string value at

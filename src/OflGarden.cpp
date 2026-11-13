@@ -300,10 +300,61 @@ void OflGarden::writeActuators(uint8_t groupAnchor, JsonObject out) {
 
       JsonObject entry = actuators.add<JsonObject>();
       entry["capability"] = ofl_catalog::endpointType(type);
-      entry["value"] = value; // Hardware Calibration not implemented yet (Phase 2) — raw value passed through
-      entry["unit"] = ofl_catalog::catalogUnit(type);
+      describeActuator(m->address, type, format, value, entry);
     }
   }
+}
+
+bool OflGarden::luxCurve(uint8_t address, std::vector<config::CurvePoint> &out) {
+  out.clear();
+  String stored = config::load(config::kSettingsNamespace, settingsKey(address).c_str());
+  if (stored.isEmpty()) return false;
+  JsonDocument doc;
+  if (deserializeJson(doc, stored) != DeserializationError::Ok) return false;
+  return config::readCurve(doc[config::kLuxCurveKey], out) && out.size() >= 2;
+}
+
+// docs/17 §17.2: value in physical units. A light with a measured
+// PWM -> lux curve (Settings dimmer_lux_curve) reports lux plus the curve's
+// range as min/max; without one, an endpoint whose wire format is Percent
+// is reported honestly as percent rather than as the catalog's lux.
+void OflGarden::describeActuator(uint8_t address, TypeId type, Format format, uint32_t raw, JsonObject entry) {
+  std::vector<config::CurvePoint> curve;
+  if (type == TypeId::Dimmer && luxCurve(address, curve)) {
+    entry["value"] = roundf(config::curveToPhysical(curve, raw));
+    entry["unit"] = "lux";
+    entry["min"] = curve.front().physical;
+    entry["max"] = curve.back().physical;
+    return;
+  }
+  entry["value"] = raw;
+  if (format == Format::Percent) {
+    entry["unit"] = "percent";
+    entry["min"] = 0;
+    entry["max"] = 100;
+  } else {
+    entry["unit"] = ofl_catalog::catalogUnit(type);
+  }
+}
+
+bool OflGarden::setActuator(uint8_t groupAnchor, const String &capability, float value, JsonObject out) {
+  uint8_t address, ep;
+  if (!findEndpointForCapability(groupAnchor, capability, address, ep)) return false;
+  TypeId type;
+  Mode mode;
+  Format format;
+  if (!master_.selectEndpoint(address, ep) || !master_.readEndpointDescriptor(address, type, mode, format)) return false;
+
+  std::vector<config::CurvePoint> curve;
+  float command = value;
+  if (type == TypeId::Dimmer && luxCurve(address, curve)) command = config::curveToCommand(curve, value);
+  if (format == Format::Percent) command = constrain(command, 0.0f, 100.0f);
+  uint32_t raw = static_cast<uint32_t>(lroundf(command < 0 ? 0 : command));
+  if (!selectAndWrite(address, ep, raw)) return false;
+
+  out["capability"] = capability;
+  describeActuator(address, type, format, raw, out);
+  return true;
 }
 
 // Basic tier: no engine.* features (README, docs/21 §21.4). Kept as a list so

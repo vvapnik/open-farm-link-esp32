@@ -9,6 +9,8 @@
 #include <OgrMainEsp32.h>
 #include <Preferences.h>
 
+#include "OflConfig.h"
+
 #include <vector>
 
 namespace ofl {
@@ -133,6 +135,11 @@ class OflGarden {
   // stored. Returns false if there's neither.
   bool writeEffectiveSettings(uint8_t address, JsonObject out);
 
+  // PUT .../actuators/{capability}: `value` in the unit GET reports (lux for
+  // a calibrated light), converted to the module's command. Writes the
+  // resulting entry into `out`. False if the capability isn't there.
+  bool setActuator(uint8_t groupAnchor, const String &capability, float value, JsonObject out);
+
   // Grow Profile (docs/08). `json` must already be validated.
   bool setGrowProfile(const String &plantId, const String &json);
 
@@ -153,7 +160,9 @@ class OflGarden {
   static constexpr uint8_t kSystemGroup = 0xFF; // not a valid I2C address (7-bit) — safe sentinel
 
  private:
-  void assignGrouping(); // see .cpp — the "which modules belong to which Plant" heuristic
+  void assignGrouping();
+  bool luxCurve(uint8_t address, std::vector<config::CurvePoint> &out); // >= 2 stored points
+  void describeActuator(uint8_t address, ogr::TypeId type, ogr::Format format, uint32_t raw, JsonObject entry); // see .cpp — the "which modules belong to which Plant" heuristic
 
   ogr_main::OgrMaster &master_;
   String gardenId_;
