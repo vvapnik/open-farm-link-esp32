@@ -37,7 +37,8 @@ OgrEsp32Transport transport(Wire, kSdaPin, kSclPin, kEnPin);
 OgrMaster master(transport);
 ofl::OflGarden garden(master);
 WebServer webServer(kHttpPort);
-ofl::OflHttpServer oflServer(webServer, garden);
+ofl::OflHistory history(garden);
+ofl::OflHttpServer oflServer(webServer, garden, history);
 
 void dprintf(const char *fmt, ...) {
   char buf[160];
@@ -117,6 +118,7 @@ void loop() {
   master.update(millis());
   garden.update();
   garden.pollTimeSync();
+  history.update(garden.timeValid());
   webServer.handleClient();
 
   static uint32_t lastHeartbeat = 0;

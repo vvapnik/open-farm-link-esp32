@@ -1,5 +1,5 @@
-// The REST surface from open-farm-link/docs/16-rest-api.md — Phase 1
-// subset (read-heavy + Actuators/raw-endpoint writes). WebServer only
+// The REST surface from open-farm-link/docs/16-rest-api.md, minus
+// Security (§22), Scenarios and Culture Pack (not implemented yet). WebServer only
 // matches exact static paths, so this is a small hand-rolled router over
 // onNotFound() rather than per-route .on() registrations — needed for
 // {id}-shaped segments like /garden/plants/{id}/vitals.
@@ -10,18 +10,22 @@
 #include <vector>
 
 #include "OflGarden.h"
+#include "OflHistory.h"
 
 namespace ofl {
 
 class OflHttpServer {
  public:
-  OflHttpServer(WebServer &server, OflGarden &garden);
+  OflHttpServer(WebServer &server, OflGarden &garden, OflHistory &history);
   void begin();
 
  private:
   void handleRequest();
   void sendJson(int status, JsonDocument &doc);
   void sendError(int status, const char *error);
+  void sendMissing(const std::vector<String> &missing); // 422 missing_capabilities
+  // Parses the request body; on failure sends 400 and returns false.
+  bool readBody(JsonDocument &body);
 
   bool handleGardenRoutes(const std::vector<String> &seg, const String &method);
   bool handlePlantRoutes(const std::vector<String> &seg, const String &method);
@@ -32,6 +36,7 @@ class OflHttpServer {
 
   WebServer &server_;
   OflGarden &garden_;
+  OflHistory &history_;
 };
 
 } // namespace ofl

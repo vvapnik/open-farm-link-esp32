@@ -4,6 +4,7 @@
 #include <time.h>
 
 #include "OflCatalog.h"
+#include "OflConfig.h"
 
 using namespace ogr;
 using namespace ogr_main;
@@ -20,6 +21,22 @@ constexpr char kGardenPrefsNamespace[] = "ofl_garden";
 // was written well after 2020) — used to tell "NTP hasn't landed yet" apart
 // from "NTP landed and it's actually that time".
 constexpr time_t kValidTimeThreshold = 1577836800; // 2020-01-01T00:00:00Z
+
+// Moisture: the pot module reports the raw NE555 frequency (OGR 0x40, Raw16,
+// 10 Hz units) and the Head Device maps it to 0-100 % between two points
+// (OGR spec 07, OFL docs/06 §6.1), kept in the module's Settings. These
+// typical points apply until the user calibrates — taken from the pot
+// firmware's working range (~45-115 kHz); refine them from a real batch.
+constexpr char kDryKey[] = "moisture_dry_raw";
+constexpr char kWetKey[] = "moisture_wet_raw";
+constexpr uint32_t kDefaultDryRaw = 11500; // in air
+constexpr uint32_t kDefaultWetRaw = 4500;  // in water
+
+float moisturePercent(uint32_t raw, uint32_t dry, uint32_t wet) {
+  if (dry == wet) return 0;
+  float pct = (static_cast<float>(dry) - raw) * 100.0f / (static_cast<float>(dry) - wet);
+  return constrain(pct, 0.0f, 100.0f);
+}
 
 // UTC calendar date -> Unix epoch seconds. Not using libc's `timegm()` —
 // this toolchain's newlib doesn't provide it (only the (locale-dependent)
@@ -125,6 +142,7 @@ void OflGarden::assignGrouping() {
       descPrefs_.begin(kDescPrefsNamespace, /*readOnly=*/true);
       p.description = descPrefs_.getString(p.plantId.c_str(), "");
       descPrefs_.end();
+      p.growProfile = config::load(config::kGrowNamespace, p.plantId.c_str());
     }
     groupOfAddress_[m->address] = m->address;
   }
@@ -207,8 +225,14 @@ bool OflGarden::writePlantSummary(const PlantEntry &plant, JsonObject out) {
   return true;
 }
 
-void OflGarden::writeVitals(uint8_t groupAnchor, JsonObject out) {
-  JsonArray vitals = out["vitals"].to<JsonArray>();
+void OflGarden::collectVitals(uint8_t groupAnchor, std::vector<VitalReading> &out) {
+  // Substrate correction from the Plant's Grow Profile (docs/08 §8.5) — the
+  // same "add offset, clamp percent" the mock server applies.
+  JsonDocument profile;
+  const PlantEntry *plant = plantForGroup(groupAnchor);
+  if (plant && !plant->growProfile.isEmpty()) deserializeJson(profile, plant->growProfile);
+  JsonObjectConst calibration = profile["sensor_calibration"];
+
   uint8_t count = master_.moduleCount();
   for (uint8_t i = 0; i < count; ++i) {
     const ModuleInfo *m = master_.moduleAt(i);
@@ -223,14 +247,35 @@ void OflGarden::writeVitals(uint8_t groupAnchor, JsonObject out) {
       if (!ofl_catalog::isSensorType(type)) continue;
       if (mode != Mode::Read && mode != Mode::ReadWrite) continue;
 
-      uint32_t value = 0;
-      if (!master_.readEndpointData(m->address, value)) continue;
+      uint32_t raw = 0;
+      if (!master_.readEndpointData(m->address, raw)) continue;
 
-      JsonObject entry = vitals.add<JsonObject>();
-      entry["type"] = ofl_catalog::endpointType(type);
-      entry["value"] = value; // Hardware Calibration not implemented yet (Phase 2) — raw value passed through
-      entry["unit"] = ofl_catalog::catalogUnit(type);
+      float value = static_cast<float>(raw);
+      if (type == TypeId::Moisture && format == Format::Raw16) {
+        JsonDocument settings;
+        writeEffectiveSettings(m->address, settings.to<JsonObject>());
+        value = moisturePercent(raw, settings[kDryKey] | kDefaultDryRaw, settings[kWetKey] | kDefaultWetRaw);
+        // writeEffectiveSettings re-selected endpoints; nothing else is read below.
+      }
+      JsonVariantConst offset = calibration[ofl_catalog::endpointType(type)]["offset"];
+      if (offset.is<float>()) {
+        value += offset.as<float>();
+        if (strcmp(ofl_catalog::catalogUnit(type), "percent") == 0) value = constrain(value, 0.0f, 100.0f);
+      }
+      out.push_back({type, value});
     }
+  }
+}
+
+void OflGarden::writeVitals(uint8_t groupAnchor, JsonObject out) {
+  std::vector<VitalReading> readings;
+  collectVitals(groupAnchor, readings);
+  JsonArray vitals = out["vitals"].to<JsonArray>();
+  for (const auto &r : readings) {
+    JsonObject entry = vitals.add<JsonObject>();
+    entry["type"] = ofl_catalog::endpointType(r.type);
+    entry["value"] = r.value;
+    entry["unit"] = ofl_catalog::catalogUnit(r.type);
   }
 }
 
@@ -261,8 +306,11 @@ void OflGarden::writeActuators(uint8_t groupAnchor, JsonObject out) {
   }
 }
 
-void OflGarden::writeCapabilities(uint8_t groupAnchor, JsonObject out) {
-  JsonArray modules = out["modules"].to<JsonArray>();
+// Basic tier: no engine.* features (README, docs/21 §21.4). Kept as a list so
+// a richer build only has to add entries here.
+static const char *const kEngineCapabilities[] = {nullptr};
+
+void OflGarden::collectCapabilities(uint8_t groupAnchor, std::vector<String> &out) {
   uint8_t count = master_.moduleCount();
   for (uint8_t i = 0; i < count; ++i) {
     const ModuleInfo *m = master_.moduleAt(i);
@@ -274,14 +322,151 @@ void OflGarden::writeCapabilities(uint8_t groupAnchor, JsonObject out) {
       Format format;
       if (!master_.selectEndpoint(m->address, ep) || !master_.readEndpointDescriptor(m->address, type, mode, format))
         continue;
-      const char *key = ofl_catalog::endpointType(type);
-
+      String key = ofl_catalog::endpointType(type);
       bool already = false;
-      for (JsonVariant v : modules)
-        if (strcmp(v.as<const char *>(), key) == 0) already = true;
-      if (!already) modules.add(key);
+      for (const auto &k : out)
+        if (k == key) already = true;
+      if (!already) out.push_back(key);
     }
   }
+}
+
+static void writeEngineCapabilities(JsonArray out) {
+  for (const char *const *f = kEngineCapabilities; *f; ++f) out.add(*f);
+}
+
+void OflGarden::writeCapabilities(uint8_t groupAnchor, JsonObject out) {
+  std::vector<String> caps;
+  collectCapabilities(groupAnchor, caps);
+  JsonArray modules = out["modules"].to<JsonArray>();
+  for (const auto &k : caps) modules.add(k);
+  writeEngineCapabilities(out["engine"].to<JsonArray>());
+}
+
+void OflGarden::writeGardenCapabilities(JsonObject out) { writeEngineCapabilities(out["engine"].to<JsonArray>()); }
+
+std::vector<String> OflGarden::missingCapabilities(uint8_t groupAnchor, JsonArrayConst required) {
+  std::vector<String> own, system, missing;
+  collectCapabilities(groupAnchor, own);
+  if (groupAnchor == kSystemGroup) system = own;
+  else collectCapabilities(kSystemGroup, system);
+  for (const char *const *f = kEngineCapabilities; *f; ++f) {
+    own.push_back(*f);
+    system.push_back(*f);
+  }
+
+  for (JsonVariantConst v : required) {
+    String flag = v.as<const char *>();
+    const std::vector<String> *set = &own;
+    String key = flag;
+    if (flag.startsWith("system.")) {
+      set = &system;
+      key = flag.substring(7);
+    }
+    bool found = false;
+    for (const auto &k : *set)
+      if (k == key) found = true;
+    if (!found) missing.push_back(flag);
+  }
+  return missing;
+}
+
+bool OflGarden::groupHasModule(uint8_t groupAnchor, uint8_t address) const {
+  return address < 128 && master_.findModule(address) != nullptr && groupOfAddress_[address] == groupAnchor;
+}
+
+const PlantEntry *OflGarden::plantForGroup(uint8_t groupAnchor) const {
+  if (groupAnchor == kSystemGroup) return nullptr;
+  for (const auto &p : plants_)
+    if (p.used && p.anchorAddress == groupAnchor) return &p;
+  return nullptr;
+}
+
+String OflGarden::settingsKey(uint8_t address) {
+  uint8_t group = groupOfAddress_[address];
+  const PlantEntry *plant = plantForGroup(group);
+  const ModuleInfo *self = master_.findModule(address);
+  if (!self) return String();
+  uint32_t bp = kNoBlueprintUid;
+  master_.readBlueprintUid(address, bp);
+
+  // Unprogrammed modules all report blueprint 0, so the class is part of the
+  // key too. Position among same-class, same-blueprint modules of this group, in enumeration order.
+  uint8_t ordinal = 0;
+  uint8_t count = master_.moduleCount();
+  for (uint8_t i = 0; i < count; ++i) {
+    const ModuleInfo *m = master_.moduleAt(i);
+    if (!m || m->address == address) break;
+    if (groupOfAddress_[m->address] != group) continue;
+    if (m->classId != self->classId) continue;
+    uint32_t otherBp = kNoBlueprintUid;
+    master_.readBlueprintUid(m->address, otherBp);
+    if (otherBp == bp) ++ordinal;
+  }
+
+  // FNV-1a over "owner|class|blueprint|ordinal" -> 8 hex chars, under NVS's 15-char key cap.
+  char src[48];
+  snprintf(src, sizeof(src), "%s|%02x|%08lx|%u", plant ? plant->plantId.c_str() : "system",
+           static_cast<unsigned>(self->classId), static_cast<unsigned long>(bp), ordinal);
+  uint32_t h = 2166136261u;
+  for (const char *c = src; *c; ++c) h = (h ^ static_cast<uint8_t>(*c)) * 16777619u;
+  char key[12];
+  snprintf(key, sizeof(key), "s%08lx", static_cast<unsigned long>(h));
+  return key;
+}
+
+bool OflGarden::writeEffectiveSettings(uint8_t address, JsonObject out) {
+  const ModuleInfo *m = master_.findModule(address);
+  if (!m) return false;
+  bool any = false;
+
+  for (uint8_t ep = 0; ep < m->epCount; ++ep) {
+    TypeId type;
+    Mode mode;
+    Format format;
+    if (!master_.selectEndpoint(address, ep) || !master_.readEndpointDescriptor(address, type, mode, format)) continue;
+    if (type == TypeId::Moisture && format == Format::Raw16) {
+      out[kDryKey] = kDefaultDryRaw;
+      out[kWetKey] = kDefaultWetRaw;
+      any = true;
+    }
+  }
+
+  String stored = config::load(config::kSettingsNamespace, settingsKey(address).c_str());
+  JsonDocument doc;
+  if (!stored.isEmpty() && deserializeJson(doc, stored) == DeserializationError::Ok) {
+    for (JsonPairConst kv : doc.as<JsonObjectConst>()) out[kv.key()] = kv.value();
+    any = true;
+  }
+  return any;
+}
+
+void OflGarden::writeHardwareCalibration(uint8_t, JsonObject out) { out["calibrations"].to<JsonArray>(); }
+
+void OflGarden::writeSettingsList(uint8_t groupAnchor, JsonObject out) {
+  JsonArray list = out["settings"].to<JsonArray>();
+  uint8_t count = master_.moduleCount();
+  for (uint8_t i = 0; i < count; ++i) {
+    const ModuleInfo *m = master_.moduleAt(i);
+    if (!m || groupOfAddress_[m->address] != groupAnchor) continue;
+    JsonDocument settings;
+    if (!writeEffectiveSettings(m->address, settings.to<JsonObject>())) continue;
+    JsonObject entry = list.add<JsonObject>();
+    char idBuf[8];
+    snprintf(idBuf, sizeof(idBuf), "0x%02X", m->address);
+    entry["module_id"] = idBuf;
+    entry["settings"] = settings.as<JsonObjectConst>();
+  }
+}
+
+bool OflGarden::setGrowProfile(const String &plantId, const String &json) {
+  for (auto &p : plants_) {
+    if (!p.used || p.plantId != plantId) continue;
+    config::store(config::kGrowNamespace, plantId.c_str(), json);
+    p.growProfile = json;
+    return true;
+  }
+  return false;
 }
 
 void OflGarden::writeModules(uint8_t groupAnchor, JsonObject out) {
@@ -412,9 +597,10 @@ void OflGarden::writeTimeInfo(JsonObject out) {
                                                         : "none";
 }
 
-bool OflGarden::setTime(const String &iso8601) {
+bool OflGarden::parseIso8601(const String &iso8601, time_t &out) {
   int y, mo, d, h, mi, se;
   if (sscanf(iso8601.c_str(), "%d-%d-%dT%d:%d:%d", &y, &mo, &d, &h, &mi, &se) != 6) return false;
+  if (mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || mi > 59 || se > 60) return false;
 
   struct tm tmVal = {};
   tmVal.tm_year = y - 1900;
@@ -423,9 +609,15 @@ bool OflGarden::setTime(const String &iso8601) {
   tmVal.tm_hour = h;
   tmVal.tm_min = mi;
   tmVal.tm_sec = se;
+  out = timegmUtc(tmVal);
+  return true;
+}
 
+bool OflGarden::setTime(const String &iso8601) {
+  time_t t;
+  if (!parseIso8601(iso8601, t)) return false;
   struct timeval tv;
-  tv.tv_sec = timegmUtc(tmVal);
+  tv.tv_sec = t;
   tv.tv_usec = 0;
   settimeofday(&tv, nullptr);
   timeSource_ = TimeSource::Manual;

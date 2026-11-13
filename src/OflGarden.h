@@ -9,6 +9,8 @@
 #include <OgrMainEsp32.h>
 #include <Preferences.h>
 
+#include <vector>
+
 namespace ofl {
 
 constexpr uint8_t kMaxPlants = OGR_MAX_MODULES; // can't exceed the module count
@@ -19,6 +21,14 @@ struct PlantEntry {
   String plantId;
   String name;
   String description;
+  String growProfile; // validated JSON (docs/08), "" = never set -> default profile
+};
+
+// One live sensor reading, already in Capability Catalog units with the
+// Plant's Grow Profile sensor_calibration offset applied (docs/08 §8.5).
+struct VitalReading {
+  ogr::TypeId type;
+  float value;
 };
 
 // How the Head Device currently believes it knows the time —
@@ -73,6 +83,9 @@ class OflGarden {
   // no internet uplink reverts to "none"). Returns false if `iso8601`
   // doesn't parse.
   bool setTime(const String &iso8601);
+  bool timeValid() const { return timeSource_ != TimeSource::None; }
+  // "YYYY-MM-DDTHH:MM:SS..." (UTC) -> epoch seconds. False if it doesn't parse.
+  static bool parseIso8601(const String &iso8601, time_t &out);
 
   // ---- JSON builders, one per REST resource this firmware serves -------
 
@@ -88,6 +101,40 @@ class OflGarden {
   void writeActuators(uint8_t groupAnchor, JsonObject out);
   void writeCapabilities(uint8_t groupAnchor, JsonObject out);
   void writeModules(uint8_t groupAnchor, JsonObject out);
+  // docs/06: always an empty list — this firmware carries no hardware-model
+  // library to import calibration curves from (import is deferred by the
+  // spec itself, §6.4), and values already arrive in catalog units.
+  void writeHardwareCalibration(uint8_t groupAnchor, JsonObject out);
+  // docs/07: stored Settings entries for modules currently in the group.
+  void writeSettingsList(uint8_t groupAnchor, JsonObject out);
+  // GET /garden/capabilities — engine-declared flags (docs/14 §14.1).
+  void writeGardenCapabilities(JsonObject out);
+
+  void collectVitals(uint8_t groupAnchor, std::vector<VitalReading> &out);
+  void collectCapabilities(uint8_t groupAnchor, std::vector<String> &out);
+  // docs/14 §14.4: which `required` flags the group lacks. A "system."
+  // prefix checks the flag against System + engine instead (same rule as
+  // the mock's missingFor()).
+  std::vector<String> missingCapabilities(uint8_t groupAnchor, JsonArrayConst required);
+
+  bool groupHasModule(uint8_t groupAnchor, uint8_t address) const;
+  // "plant-xxxxxxxx" for a Plant, nullptr for System (docs/05 owner_id).
+  const PlantEntry *plantForGroup(uint8_t groupAnchor) const;
+
+  // NVS key for a module's Settings. module_id on the wire is the bus
+  // address, which is NOT stable across reboots (see AGENTS.md), so the
+  // stored entry is keyed by what is: owning group + blueprint_id + the
+  // module's position among same-blueprint modules in that group.
+  String settingsKey(uint8_t address);
+
+  // A module's Settings as they apply: firmware defaults for its kind of
+  // hardware (docs/07 §7.2 "Default Settings" — e.g. typical moisture
+  // dry/wet points for a raw-reading pot), overlaid with what the user
+  // stored. Returns false if there's neither.
+  bool writeEffectiveSettings(uint8_t address, JsonObject out);
+
+  // Grow Profile (docs/08). `json` must already be validated.
+  bool setGrowProfile(const String &plantId, const String &json);
 
   // capability -> (address, epIndex) resolution, for Actuators PUT and
   // (later) Scenario action execution — mirrors

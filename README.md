@@ -30,12 +30,21 @@ equivalents. Plant/Garden `name` and `description` are both user-editable
 and NVS-persisted. mDNS self-advertisement as `ofl-peer{N}.local`
 (`open-farm-link/docs/16-rest-api.md` §16.4).
 
-**Not yet implemented** (Phase 2 — see AGENTS.md for the full list and
-why each is deferred, not just "TODO"): Grow Profile, Settings, Hardware
-Calibration, Preferences, Culture Pack, Scenarios (**no automation runs
-at all yet** — every Plant is inert until this exists), Vitals History,
-Capabilities-based add-time validation (nothing to validate against yet,
-since nothing writable that needs it exists).
+**Added 2026-11 (TASK-97, not yet verified on hardware):**
+`GET /garden/capabilities`, `GET/PUT /garden/preferences`,
+`GET/PUT /garden/plants/{id}/grow-profile` (validated, `422
+missing_capabilities`, `status: "noop"` when a required capability is
+gone; `sensor_calibration` offsets applied to Vitals),
+`.../settings` and `.../settings/{module_id}`, `.../hardware-calibration`
+(always an empty list: no hardware-model library on the device), and
+`.../vitals/history` (RAM ring of raw samples every 10 min once the clock
+is set; lost on reboot). Response shapes match the panel's mock server.
+
+**Not yet implemented:** Security (`open-farm-link/docs/22-security.md`:
+HTTPS, pairing, credentials) — the device runs in an open dev mode (plain
+HTTP on port 80, no auth) until then. Scenarios (**no automation runs at
+all yet** — every Plant is inert until this exists) and Culture Pack,
+which installs Scenarios. See AGENTS.md.
 
 ## Hardware
 

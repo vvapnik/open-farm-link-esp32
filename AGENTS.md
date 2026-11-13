@@ -130,64 +130,55 @@ field so a `PUT` with only one of `name`/`description` doesn't clobber the
 other — mirrors the REST doc's "either field alone is a valid partial
 update" language.
 
-## Time, and Garden/Plant name + description (2026-09-07)
+## Configuration entities (2026-11, TASK-97)
 
-`GET/PUT /garden/time` (`open-farm-link/docs/16-rest-api.md` §16.6) exists
-because this board has no battery-backed RTC: `OflGarden::beginNtpSync()`
-fires `configTime()` once WiFi connects (fire-and-forget, ESP-IDF's SNTP
-client runs in the background), and `pollTimeSync()` (called every
-`loop()`) just watches `time(nullptr)` cross a "year 2020" sanity
-threshold to notice it landed — cheap, and answers exactly the question a
-Scenario's `time` pseudo-field cares about ("is this clock meaningful
-yet"), without depending on framework-internal SNTP status APIs that
-aren't stable across ESP32 Arduino core versions. `PUT` (manual override)
-always wins for the rest of the current boot session; there's no NVS
-persistence of the manual value itself, since a stale replayed epoch would
-be actively worse than `source: "none"` on the next boot — see the doc's
-own §16.6 for why a reboot without internet just goes back to `"none"`
-until re-set. The panel auto-`PUT`s its own clock once, silently, the
-first time it observes `source: "none"` (`GardenOverview.tsx`) — a
-zero-config convenience, not a protocol requirement.
+- `OflConfig` validates Preferences / Grow Profile / Settings the same way
+  `open-farm-link-panel/packages/mock-server/src/validate.ts` does and
+  stores the validated JSON text in NVS (`ofl_pref`, `ofl_grow`,
+  `ofl_set`). Keep the two validators in step when either changes.
+- **Settings keys:** the wire `module_id` is the bus address, which is not
+  stable across reboots (see the grouping notes above). The NVS key is
+  therefore `OflGarden::settingsKey()`: a hash of owning Plant (or
+  System) + module class + `blueprint_id` + position among same-class,
+  same-blueprint modules in that group (class matters: unprogrammed
+  modules all report blueprint `0x00000000`, as on the test rig). Moving a module to another Plant, or two identical modules
+  swapping places, loses or swaps their Settings — acceptable until a
+  stable per-module identity exists in OGR.
+- **Grow Profile revalidation** (`docs/14` §14.4) is computed on every
+  `GET` instead of stored: missing capability -> `status: "noop"`, back to
+  `"active"` once the module returns.
+- **Moisture %** (TASK-104): the pot module sends raw NE555 counts (OGR
+  0x40 Raw16); `collectVitals()` maps them linearly between
+  `moisture_dry_raw` (0 %) and `moisture_wet_raw` (100 %) from the module's
+  Settings, then applies the Grow Profile offset. Without stored points the
+  firmware defaults apply (`kDefaultDryRaw`/`kDefaultWetRaw`, 11500/4500,
+  taken from the pot firmware's 45–115 kHz range — refine from a real
+  batch); Settings GET shows them as the module's "Default Settings"
+  (docs/07 §7.2). A module already reporting `percent` is passed through.
+- **Hardware Calibration** is always `{ "calibrations": [] }` — there's no
+  hardware-model library on the device (import is deferred by the spec,
+  §6.4).
+- **Vitals History** (`OflHistory`) is a 256-record RAM ring shared by all
+  owners, one raw sample per owner every 10 minutes, only after the clock
+  is valid. Not persisted: writing flash every few minutes isn't worth it
+  on the basic tier.
+- **Idle connection timeout** (§16.3, 5 s) comes from the stock
+  `WebServer` (`HTTP_MAX_DATA_WAIT = 5000`). A second connection is
+  queued by lwIP rather than refused at the TCP level — left for the
+  security work (TASK-103, §22.7).
 
-**Toolchain gotcha:** this project's newlib doesn't provide `timegm()` —
-only the locale/timezone-dependent `mktime()`, wrong for a UTC-only wire
-format. `OflGarden.cpp`'s `timegmUtc()` is Howard Hinnant's
-`days_from_civil` algorithm instead (proleptic Gregorian, UTC-only, no
-libc dependency) — don't reach for `timegm` again without checking the
-toolchain first.
+## Not implemented yet (deliberately, not overlooked)
 
-`name`/`description` for both Garden and Plant are NVS-persisted, separate
-namespaces per field (`ofl_names`, `ofl_desc`, `ofl_garden`) rather than
-one JSON blob per entity — keeps `Preferences`' 15-char key limit trivially
-satisfied (`plant_id` alone is already ~14 chars) and each field
-independently readable/writable without a decode step.
-`OflGarden::updatePlant()`/`updateGarden()` take `const String *` for each
-field so a `PUT` with only one of `name`/`description` doesn't clobber the
-other — mirrors the REST doc's "either field alone is a valid partial
-update" language.
-
-## Phase 2 (not yet implemented — deliberately, not overlooked)
-
-Each of these needs real design work, not just wiring, which is why
-they're deferred rather than rushed into Phase 1:
-
+- **Security** (`docs/22`) — tracked separately; until then the device
+  runs as an open dev endpoint (HTTP:80, no auth).
 - **Scenarios** — the actual automation engine. Until this exists, **no
   Plant runs any automation at all** — every actuator stays exactly where
   it was last explicitly PUT. This is a safety property of what's
   *missing*, not a feature: don't "fix" it by wiring something ad hoc
   into `loop()` before the Scenario entity (generic/specialized/script,
   `open-farm-link/docs/11-scenarios.md`) is properly implemented.
-- **Grow Profile / Settings / Hardware Calibration** — need NVS
-  (non-volatile storage) design: what persists across reboots, and the
-  library-import lifecycle questions already flagged as open in the spec
-  itself (`docs/07-settings.md` §7.2, `docs/15-culture-pack.md` §15.4)
-  apply here too, unresolved.
-- **Capabilities validation lifecycle** (add-time reject, revalidation →
-  `noop`) — meaningless until there's something *to* add (Grow
-  Profile/Scenario/Culture Pack writes), so implementing the gate before
-  those exist would just be dead code.
-- **Preferences, Vitals History** — same shape of "needs NVS + a real
-  design decision on retention," not just a missing route.
+- **Culture Pack** — installs Scenarios atomically (`docs/15` §15.3), so
+  it waits for the Scenario engine.
 
 ## Verified on real hardware (2026-09-07)
 
